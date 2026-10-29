@@ -1,12 +1,13 @@
-/* Schedule helpers: open weekly editor; Back closes without detail flash. */
+/* Schedule helpers: open weekly editor; Back acts like Close (no detail flash). */
 (() => {
-  if (window.__haSchedEditV7) return;
-  window.__haSchedEditV7 = true;
+  if (window.__haSchedEditV8) return;
+  window.__haSchedEditV8 = true;
   window.__haSchedEditV2 = true;
   window.__haSchedEditV3 = true;
   window.__haSchedEditV4 = true;
   window.__haSchedEditV5 = true;
   window.__haSchedEditV6 = true;
+  window.__haSchedEditV7 = true;
 
   const findEl = (root, tag, depth = 0) => {
     if (!root || depth > 30) return null;
@@ -24,12 +25,40 @@
     return null;
   };
 
-  const closeMoreInfo = () => {
+  const findByAria = (root, text, depth = 0) => {
+    if (!root || depth > 28) return null;
+    const nodes = root.querySelectorAll
+      ? [...root.querySelectorAll("ha-button, button, ha-icon-button")]
+      : [];
+    for (const n of nodes) {
+      const aria = (n.getAttribute("aria-label") || "").toLowerCase();
+      if (aria.includes(text)) return n;
+    }
+    for (const n of root.querySelectorAll ? root.querySelectorAll("*") : []) {
+      if (n.shadowRoot) {
+        const f = findByAria(n.shadowRoot, text, depth + 1);
+        if (f) return f;
+      }
+    }
+    if (root.shadowRoot) return findByAria(root.shadowRoot, text, depth + 1);
+    return null;
+  };
+
+  const isScheduleId = (id) => String(id || "").startsWith("schedule.");
+  const dialogEntityId = (dlg) => dlg && (dlg.entityId || dlg._entityId || "");
+
+  const dismissDialog = () => {
     const haEl = document.querySelector("home-assistant");
     if (!haEl) return;
     const dlg = findEl(haEl, "ha-more-info-dialog");
+    if (!dlg) return;
+    const closeBtn = findByAria(dlg, "schließen") || findByAria(dlg, "close");
+    if (closeBtn) {
+      closeBtn.click();
+      return;
+    }
     try {
-      if (dlg && typeof dlg.closeDialog === "function") dlg.closeDialog();
+      if (typeof dlg.closeDialog === "function") dlg.closeDialog();
     } catch (e) {}
     haEl.dispatchEvent(
       new CustomEvent("hass-more-info", {
@@ -40,45 +69,8 @@
     );
   };
 
-  const isScheduleId = (id) => String(id || "").startsWith("schedule.");
-  const dialogEntityId = (dlg) => dlg && (dlg.entityId || dlg._entityId || "");
-
   let lastForcedId = null;
   let lastForcedAt = 0;
-  let editorOpen = false;
-
-  const patchDialog = (dlg) => {
-    if (!dlg || dlg.__haSchedPatchedV7) return;
-    dlg.__haSchedPatchedV7 = true;
-
-    const wrap = (name) => {
-      if (typeof dlg[name] !== "function" || dlg[name].__haSchedWrapped) return;
-      const orig = dlg[name].bind(dlg);
-      const wrapped = (...args) => {
-        const id = dialogEntityId(dlg);
-        if (!isScheduleId(id)) return orig(...args);
-
-        // Any navigation away from settings while editing a schedule → close
-        if (name === "_setView") {
-          const view = args[0];
-          if (view && view !== "settings") {
-            closeMoreInfo();
-            return;
-          }
-        }
-        if (name === "_goBack") {
-          closeMoreInfo();
-          return;
-        }
-        return orig(...args);
-      };
-      wrapped.__haSchedWrapped = true;
-      dlg[name] = wrapped;
-    };
-
-    wrap("_setView");
-    wrap("_goBack");
-  };
 
   const goSettingsOnce = (entityId) => {
     const haEl = document.querySelector("home-assistant");
@@ -88,7 +80,6 @@
     if (lastForcedId === entityId && now - lastForcedAt < 1500) return;
     lastForcedId = entityId;
     lastForcedAt = now;
-    editorOpen = false;
 
     let tries = 0;
     const tick = () => {
@@ -98,15 +89,11 @@
         if (tries < 25) setTimeout(tick, 60);
         return;
       }
-      patchDialog(dlg);
       if (dialogEntityId(dlg) !== entityId) {
         if (tries < 25) setTimeout(tick, 60);
         return;
       }
-      if (findEl(haEl, "ha-schedule-form")) {
-        editorOpen = true;
-        return;
-      }
+      if (findEl(haEl, "ha-schedule-form")) return;
       try {
         if (typeof dlg._goToSettings === "function") dlg._goToSettings();
       } catch (e) {}
@@ -140,22 +127,20 @@
     "hass-more-info",
     (ev) => {
       const entityId = ev.detail && ev.detail.entityId;
-      if (!entityId) {
-        editorOpen = false;
-        return;
-      }
+      if (!entityId) return;
       if (!isScheduleId(entityId)) return;
       goSettingsOnce(entityId);
     },
     true
   );
 
-  // Capture Back while schedule editor visible
+  // Back / "Zur Detailansicht" → dismiss like Schließen
   const backHandler = (ev) => {
     const haEl = document.querySelector("home-assistant");
     if (!haEl) return;
     const dlg = findEl(haEl, "ha-more-info-dialog");
     if (!dlg || !isScheduleId(dialogEntityId(dlg))) return;
+    // only while weekly editor is visible
     if (!findEl(haEl, "ha-schedule-form")) return;
 
     const path = typeof ev.composedPath === "function" ? ev.composedPath() : [];
@@ -163,7 +148,11 @@
     for (const n of path) {
       if (!n || !n.getAttribute) continue;
       const aria = (n.getAttribute("aria-label") || n.title || "").toLowerCase();
-      if (aria.includes("zurück") || aria.includes("back") || aria.includes("detailansicht")) {
+      if (
+        aria.includes("zurück") ||
+        aria.includes("back") ||
+        aria.includes("detailansicht")
+      ) {
         isBack = true;
         break;
       }
@@ -173,31 +162,9 @@
     ev.preventDefault();
     ev.stopImmediatePropagation();
     ev.stopPropagation();
-    editorOpen = false;
-    closeMoreInfo();
+    dismissDialog();
   };
+
   document.addEventListener("pointerdown", backHandler, true);
   document.addEventListener("click", backHandler, true);
-
-  // Fallback: if editor was shown and disappears while dialog remains → close
-  setInterval(() => {
-    const haEl = document.querySelector("home-assistant");
-    if (!haEl) return;
-    const dlg = findEl(haEl, "ha-more-info-dialog");
-    if (!dlg) {
-      editorOpen = false;
-      return;
-    }
-    if (!isScheduleId(dialogEntityId(dlg))) return;
-    patchDialog(dlg);
-    const hasForm = !!findEl(haEl, "ha-schedule-form");
-    if (hasForm) {
-      editorOpen = true;
-      return;
-    }
-    if (editorOpen && !hasForm) {
-      editorOpen = false;
-      closeMoreInfo();
-    }
-  }, 80);
 })();
