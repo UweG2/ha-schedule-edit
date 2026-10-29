@@ -1,9 +1,10 @@
-/* Schedule helpers: open weekly editor once; Back closes dialog (no history flash). */
+/* Schedule helpers: open weekly editor; Back closes dialog (no detail/history flash). */
 (() => {
-  if (window.__haSchedEditV4) return;
-  window.__haSchedEditV4 = true;
+  if (window.__haSchedEditV5) return;
+  window.__haSchedEditV5 = true;
   window.__haSchedEditV2 = true;
   window.__haSchedEditV3 = true;
+  window.__haSchedEditV4 = true;
 
   const findEl = (root, tag, depth = 0) => {
     if (!root || depth > 30) return null;
@@ -33,23 +34,21 @@
     );
   };
 
-  let activeEntity = null;
-  let sawEditor = false;
-  let opening = false;
+  const isScheduleId = (id) => String(id || "").startsWith("schedule.");
+
+  const dialogEntityId = (dlg) => dlg && (dlg.entityId || dlg._entityId || "");
+
   let lastForcedId = null;
   let lastForcedAt = 0;
 
   const goSettingsOnce = (entityId) => {
     const haEl = document.querySelector("home-assistant");
-    if (!haEl || !entityId || !String(entityId).startsWith("schedule.")) return;
+    if (!haEl || !isScheduleId(entityId)) return;
 
     const now = Date.now();
     if (lastForcedId === entityId && now - lastForcedAt < 1500) return;
     lastForcedId = entityId;
     lastForcedAt = now;
-    opening = true;
-    activeEntity = entityId;
-    sawEditor = false;
 
     let tries = 0;
     const tick = () => {
@@ -57,25 +56,17 @@
       const dlg = findEl(haEl, "ha-more-info-dialog");
       if (!dlg) {
         if (tries < 20) setTimeout(tick, 70);
-        else opening = false;
         return;
       }
-      const id = dlg.entityId || dlg._entityId;
-      if (id !== entityId) {
+      if (dialogEntityId(dlg) !== entityId) {
         if (tries < 20) setTimeout(tick, 70);
-        else opening = false;
         return;
       }
-      if (findEl(haEl, "ha-schedule-form")) {
-        sawEditor = true;
-        opening = false;
-        return;
-      }
+      if (findEl(haEl, "ha-schedule-form")) return;
       try {
         if (typeof dlg._goToSettings === "function") dlg._goToSettings();
       } catch (e) {}
       if (tries < 20) setTimeout(tick, 70);
-      else opening = false;
     };
     setTimeout(tick, 20);
   };
@@ -105,49 +96,40 @@
     "hass-more-info",
     (ev) => {
       const entityId = ev.detail && ev.detail.entityId;
-      if (!entityId) {
-        activeEntity = null;
-        sawEditor = false;
-        opening = false;
-        return;
-      }
-      if (!String(entityId).startsWith("schedule.")) {
-        activeEntity = null;
-        sawEditor = false;
-        return;
-      }
+      if (!entityId) return;
+      if (!isScheduleId(entityId)) return;
       goSettingsOnce(entityId);
     },
     true
   );
 
-  // If user hits Back from editor → HA shows info/history briefly.
-  // Detect leave-editor and close the whole dialog instead.
-  setInterval(() => {
-    if (opening) return;
+  // Capture "Zurück zur Detailansicht" while schedule editor is open → close instead
+  const shouldCloseOnBack = (ev) => {
     const haEl = document.querySelector("home-assistant");
-    if (!haEl) return;
+    if (!haEl) return false;
     const dlg = findEl(haEl, "ha-more-info-dialog");
-    if (!dlg) {
-      activeEntity = null;
-      sawEditor = false;
-      return;
-    }
-    const id = dlg.entityId || dlg._entityId || "";
-    if (!String(id).startsWith("schedule.")) return;
+    if (!dlg || !isScheduleId(dialogEntityId(dlg))) return false;
+    if (!findEl(haEl, "ha-schedule-form")) return false;
 
-    const hasForm = !!findEl(haEl, "ha-schedule-form");
-    if (hasForm) {
-      sawEditor = true;
-      activeEntity = id;
-      return;
+    const path = typeof ev.composedPath === "function" ? ev.composedPath() : [];
+    for (const n of path) {
+      if (!n || !n.getAttribute) continue;
+      const aria = (n.getAttribute("aria-label") || n.title || "").toLowerCase();
+      if (aria.includes("zurück") || aria.includes("back")) return true;
+      const icon = n.icon || n.getAttribute("icon") || "";
+      if (/arrow-left|chevron-left/.test(icon)) return true;
     }
+    return false;
+  };
 
-    // Had editor, now back on info page for same schedule → close
-    if (sawEditor && activeEntity === id && !hasForm) {
-      sawEditor = false;
-      activeEntity = null;
-      closeMoreInfo();
-    }
-  }, 120);
+  const onBackIntent = (ev) => {
+    if (!shouldCloseOnBack(ev)) return;
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+    ev.stopPropagation();
+    closeMoreInfo();
+  };
+
+  document.addEventListener("click", onBackIntent, true);
+  document.addEventListener("pointerdown", onBackIntent, true);
 })();
